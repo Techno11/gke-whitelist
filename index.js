@@ -11,6 +11,7 @@ const name = core.getInput("name");
 
 if (whitelist) {
   performWhitelist(cidr, name).catch((err) => {
+    core.error("ERROR ERROR ERROR");
     core.setFailed(err);
   });
 } else {

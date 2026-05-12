@@ -414801,6 +414801,7 @@ const name = core.getInput("name");
 
 if (whitelist) {
   performWhitelist(cidr, name).catch((err) => {
+    core.error("ERROR ERROR ERROR " + err.stack );
     core.setFailed(err);
   });
 } else {
@@ -414894,7 +414895,11 @@ async function updateCidrs(projectId, authClient, cidrsToSend) {
     },
     body: payload,
   })
-  if (updateResp.status !== 200) throw new Error(resp);
+  if (updateResp.status !== 200) {
+    core.error( updateResp.status );
+    core.error( updateResp.body );
+    throw new Error(updateResp);
+  }
 }
 
 })();
