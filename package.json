@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node -r dotenv/config index.js",
-    "build": "esbuild index.js --bundle --platform=node --target=node24 --format=cjs --outfile=dist/index.js",
+    "build": "esbuild index.js --bundle --platform=node --target=node24 --format=cjs --outfile=dist/index.cjs",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js"
   },
   "dependencies": {
