@@ -1,4 +1,18 @@
+import { HttpClient } from "@actions/http-client";
 import { google } from "googleapis";
+
+const USER_AGENT = "gke-whitelist";
+
+function clusterUrl(projectId, cluster) {
+  const { location, clusterId } = cluster;
+  return `https://container.googleapis.com/v1beta1/projects/${projectId}/locations/${location}/clusters/${clusterId}`;
+}
+
+function authHeaders(authClient) {
+  return {
+    Authorization: "OAuth " + authClient,
+  };
+}
 
 /**
  * Whitelist an IP range on a GKE private cluster master.
@@ -45,19 +59,13 @@ export async function authorize() {
  * @param {{ location: string, clusterId: string }} cluster
  */
 export async function getCidrs(projectId, authClient, cluster) {
-  const { location, clusterId } = cluster;
-  const resp = await globalThis.fetch(
-    `https://container.googleapis.com/v1beta1/projects/${projectId}/locations/${location}/clusters/${clusterId}`,
-    {
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "OAuth " + authClient,
-      },
-    }
-  );
-  if (resp.status !== 200) throw new Error(String(resp.status));
-  const json = await resp.json();
-  return json.masterAuthorizedNetworksConfig.cidrBlocks;
+  const client = new HttpClient(USER_AGENT);
+  const url = clusterUrl(projectId, cluster);
+  const { result } = await client.getJson(url, authHeaders(authClient));
+  if (!result?.masterAuthorizedNetworksConfig?.cidrBlocks) {
+    throw new Error("Unexpected cluster response shape");
+  }
+  return result.masterAuthorizedNetworksConfig.cidrBlocks;
 }
 
 /**
@@ -67,26 +75,16 @@ export async function getCidrs(projectId, authClient, cluster) {
  * @param {{ location: string, clusterId: string }} cluster
  */
 export async function updateCidrs(projectId, authClient, cidrsToSend, cluster) {
-  const { location, clusterId } = cluster;
-  const payload = JSON.stringify({
+  const client = new HttpClient(USER_AGENT);
+  const url = clusterUrl(projectId, cluster);
+  const body = {
     update: {
       desiredMasterAuthorizedNetworksConfig: {
         enabled: true,
         cidrBlocks: cidrsToSend,
       },
     },
-    name: `projects/${projectId}/locations/${location}/clusters/${clusterId}`,
-  });
-  const updateResp = await globalThis.fetch(
-    `https://container.googleapis.com/v1beta1/projects/${projectId}/locations/${location}/clusters/${clusterId}`,
-    {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "OAuth " + authClient,
-      },
-      body: payload,
-    }
-  );
-  if (updateResp.status !== 200) throw new Error(String(updateResp.status));
+    name: `projects/${projectId}/locations/${cluster.location}/clusters/${cluster.clusterId}`,
+  };
+  await client.putJson(url, body, authHeaders(authClient));
 }

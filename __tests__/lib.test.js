@@ -2,13 +2,22 @@
  * @jest-environment node
  */
 import {
-  afterEach,
   beforeEach,
   describe,
   expect,
   it,
   jest,
 } from "@jest/globals";
+
+const mockGetJson = jest.fn();
+const mockPutJson = jest.fn();
+
+await jest.unstable_mockModule("@actions/http-client", () => ({
+  HttpClient: jest.fn(() => ({
+    getJson: mockGetJson,
+    putJson: mockPutJson,
+  })),
+}));
 
 await jest.unstable_mockModule("googleapis", () => ({
   google: {
@@ -29,15 +38,11 @@ const {
 
 const cluster = { location: "us-central1", clusterId: "my-cluster" };
 
-const originalFetch = globalThis.fetch;
-
-/** @type {jest.Mock} */
-let fetchMock;
+const clusterApiUrl =
+  "https://container.googleapis.com/v1beta1/projects/proj-1/locations/us-central1/clusters/my-cluster";
 
 beforeEach(() => {
   jest.clearAllMocks();
-  fetchMock = jest.fn();
-  globalThis.fetch = fetchMock;
   google.auth.getProjectId.mockResolvedValue("proj-1");
   const mockGetAccessToken = jest.fn().mockResolvedValue("access-token");
   google.auth.GoogleAuth.mockImplementation(() => ({
@@ -45,22 +50,19 @@ beforeEach(() => {
   }));
 });
 
-afterEach(() => {
-  globalThis.fetch = originalFetch;
-});
-
 describe("getCidrs", () => {
   it("returns cidr blocks from the cluster API", async () => {
-    fetchMock.mockResolvedValue({
-      status: 200,
-      json: async () => ({
+    mockGetJson.mockResolvedValue({
+      statusCode: 200,
+      result: {
         masterAuthorizedNetworksConfig: {
           cidrBlocks: [
             { displayName: "a", cidrBlock: "10.0.0.0/8" },
             { displayName: "b", cidrBlock: "192.168.0.0/16" },
           ],
         },
-      }),
+      },
+      headers: {},
     });
 
     const blocks = await getCidrs("proj-1", "tok", cluster);
@@ -69,18 +71,16 @@ describe("getCidrs", () => {
       { displayName: "a", cidrBlock: "10.0.0.0/8" },
       { displayName: "b", cidrBlock: "192.168.0.0/16" },
     ]);
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://container.googleapis.com/v1beta1/projects/proj-1/locations/us-central1/clusters/my-cluster",
+    expect(mockGetJson).toHaveBeenCalledWith(
+      clusterApiUrl,
       expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: "OAuth tok",
-        }),
+        Authorization: "OAuth tok",
       })
     );
   });
 
   it("throws when the API returns a non-200 status", async () => {
-    fetchMock.mockResolvedValue({ status: 403 });
+    mockGetJson.mockRejectedValue(new Error("403"));
 
     await expect(getCidrs("proj-1", "tok", cluster)).rejects.toThrow("403");
   });
@@ -88,7 +88,11 @@ describe("getCidrs", () => {
 
 describe("updateCidrs", () => {
   it("sends a PUT with desired master authorized networks", async () => {
-    fetchMock.mockResolvedValue({ status: 200 });
+    mockPutJson.mockResolvedValue({
+      statusCode: 200,
+      result: {},
+      headers: {},
+    });
 
     await updateCidrs(
       "proj-1",
@@ -97,31 +101,25 @@ describe("updateCidrs", () => {
       cluster
     );
 
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://container.googleapis.com/v1beta1/projects/proj-1/locations/us-central1/clusters/my-cluster",
+    expect(mockPutJson).toHaveBeenCalledWith(
+      clusterApiUrl,
+      {
+        update: {
+          desiredMasterAuthorizedNetworksConfig: {
+            enabled: true,
+            cidrBlocks: [{ displayName: "x", cidrBlock: "1.2.3.4/32" }],
+          },
+        },
+        name: "projects/proj-1/locations/us-central1/clusters/my-cluster",
+      },
       expect.objectContaining({
-        method: "PUT",
-        headers: expect.objectContaining({
-          Authorization: "OAuth tok",
-          "Content-Type": "application/json",
-        }),
+        Authorization: "OAuth tok",
       })
     );
-    const [, options] = fetchMock.mock.calls[0];
-    const body = JSON.parse(options.body);
-    expect(body).toEqual({
-      update: {
-        desiredMasterAuthorizedNetworksConfig: {
-          enabled: true,
-          cidrBlocks: [{ displayName: "x", cidrBlock: "1.2.3.4/32" }],
-        },
-      },
-      name: "projects/proj-1/locations/us-central1/clusters/my-cluster",
-    });
   });
 
   it("throws when the update returns a non-200 status", async () => {
-    fetchMock.mockResolvedValue({ status: 500 });
+    mockPutJson.mockRejectedValue(new Error("500"));
 
     await expect(
       updateCidrs("proj-1", "tok", [], cluster)
@@ -131,23 +129,26 @@ describe("updateCidrs", () => {
 
 describe("performWhitelist", () => {
   it("appends a new CIDR and PUTs the merged list", async () => {
-    fetchMock
-      .mockResolvedValueOnce({
-        status: 200,
-        json: async () => ({
-          masterAuthorizedNetworksConfig: {
-            cidrBlocks: [{ displayName: "old", cidrBlock: "10.0.0.0/8" }],
-          },
-        }),
-      })
-      .mockResolvedValueOnce({ status: 200 });
+    mockGetJson.mockResolvedValueOnce({
+      statusCode: 200,
+      result: {
+        masterAuthorizedNetworksConfig: {
+          cidrBlocks: [{ displayName: "old", cidrBlock: "10.0.0.0/8" }],
+        },
+      },
+      headers: {},
+    });
+    mockPutJson.mockResolvedValueOnce({
+      statusCode: 200,
+      result: {},
+      headers: {},
+    });
 
     await performWhitelist("203.0.113.0/24", "CI runner", cluster);
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const putCall = fetchMock.mock.calls.find((c) => c[1]?.method === "PUT");
-    expect(putCall).toBeDefined();
-    const payload = JSON.parse(putCall[1].body);
+    expect(mockGetJson).toHaveBeenCalledTimes(1);
+    expect(mockPutJson).toHaveBeenCalledTimes(1);
+    const payload = mockPutJson.mock.calls[0][1];
     expect(
       payload.update.desiredMasterAuthorizedNetworksConfig.cidrBlocks
     ).toEqual([
@@ -159,24 +160,27 @@ describe("performWhitelist", () => {
 
 describe("performUnwhitelist", () => {
   it("removes the matching CIDR and PUTs the rest", async () => {
-    fetchMock
-      .mockResolvedValueOnce({
-        status: 200,
-        json: async () => ({
-          masterAuthorizedNetworksConfig: {
-            cidrBlocks: [
-              { displayName: "keep", cidrBlock: "10.0.0.0/8" },
-              { displayName: "drop", cidrBlock: "203.0.113.5/32" },
-            ],
-          },
-        }),
-      })
-      .mockResolvedValueOnce({ status: 200 });
+    mockGetJson.mockResolvedValueOnce({
+      statusCode: 200,
+      result: {
+        masterAuthorizedNetworksConfig: {
+          cidrBlocks: [
+            { displayName: "keep", cidrBlock: "10.0.0.0/8" },
+            { displayName: "drop", cidrBlock: "203.0.113.5/32" },
+          ],
+        },
+      },
+      headers: {},
+    });
+    mockPutJson.mockResolvedValueOnce({
+      statusCode: 200,
+      result: {},
+      headers: {},
+    });
 
     await performUnwhitelist("203.0.113.5/32", cluster);
 
-    const putCall = fetchMock.mock.calls.find((c) => c[1]?.method === "PUT");
-    const payload = JSON.parse(putCall[1].body);
+    const payload = mockPutJson.mock.calls[0][1];
     expect(
       payload.update.desiredMasterAuthorizedNetworksConfig.cidrBlocks
     ).toEqual([{ displayName: "keep", cidrBlock: "10.0.0.0/8" }]);
